@@ -25,8 +25,8 @@
 #define BUTTON_PIN    4
 
 // Sensor reading and display timing
-#define MOISTURE_THRESHOLD 50 // Percentage threshold for moisture
-#define DISPLAY_TOGGLE_MS  5000    // 5 seconds
+#define MOISTURE_THRESHOLD 50.0 // Percentage threshold for moisture
+#define DISPLAY_TOGGLE_MS  5000  // 5 seconds
 // Moisture sensor calibration values
 #define MOISTURE_DRY 2800
 #define MOISTURE_WET 1080
@@ -40,6 +40,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 unsigned long lastReadTime = 0;
 unsigned long lastDisplayToggleTime = 0;
 bool showHumidity = true;
+bool autoModeEnabled = false;
 bool relayForcedState = false;
 bool relayIsForced = false;
 
@@ -59,6 +60,8 @@ const char* state_topic_moisture = "home/water_plant_1/sensor/moisture";
 const char* relay_state_topic = "home/water_plant_1/relay/state";
 const char* relay_command_topic = "home/water_plant_1/relay/set";
 const char* read_interval_topic = "home/water_plant_1/interval/set";
+const char* auto_mode_command_topic = "home/water_plant_1/auto_mode/set";
+const char* auto_mode_state_topic   = "home/water_plant_1/auto_mode/state";
 const char* availability_topic = "home/water_plant_1/status";
 
 const char* ssid = "Artemis";
@@ -89,6 +92,7 @@ void IRAM_ATTR handleButtonInterrupt() {
 // Set relay state and publish to MQTT
 void update_relay_state(bool is_on) {
   digitalWrite(RELAY_PIN, is_on ? HIGH : LOW);
+  digitalWrite(ONBOARD_LED_PIN, is_on ? HIGH : LOW);
   const char* state = is_on ? "ON" : "OFF";
   client.publish(relay_state_topic, state, true);
 }
@@ -118,7 +122,18 @@ void callback(char* topic, byte* payload, unsigned int length) {
     } else {
       Serial.println("Invalid interval received via MQTT.");
     }
+  } else if (String(topic) == auto_mode_command_topic) {
+    if (command == "ON") {
+      autoModeEnabled = true;
+      Serial.println("Auto watering ENABLED via MQTT");
+    } else if (command == "OFF") {
+      autoModeEnabled = false;
+      client.publish(relay_command_topic, "OFF", true);
+      Serial.println("Auto watering DISABLED via MQTT");
+    }
+    client.publish(auto_mode_state_topic, autoModeEnabled ? "ON" : "OFF", true);
   }
+
 }
 
 // Connect to Wi-Fi network
@@ -209,6 +224,19 @@ void publish_discovery() {
     "\"device\": {\"identifiers\": [\"" + String(device_name) + "\"], \"name\": \"Water Plant 1\"}" +
   "}";
 
+  String auto_mode_config = String("{") +
+    "\"name\": \"Auto Watering Mode\"," +
+    "\"state_topic\": \"" + auto_mode_state_topic + "\"," +
+    "\"command_topic\": \"" + auto_mode_command_topic + "\"," +
+    "\"payload_on\": \"ON\"," +
+    "\"payload_off\": \"OFF\"," +
+    "\"unique_id\": \"" + String(device_name) + "_auto_mode\"," +
+    "\"availability_topic\": \"" + availability_topic + "\"," +
+    "\"device\": {\"identifiers\": [\"" + device_name + "\"], \"name\": \"Water Plant 1\"}" +
+  "}";
+
+  
+  
   // Publish discovery messages
   client.setBufferSize(1024); // Increase buffer size for larger messages
   client.publish("homeassistant/sensor/water_plant_1/temperature/config", temp_config.c_str(), true);
@@ -216,6 +244,7 @@ void publish_discovery() {
   client.publish("homeassistant/sensor/water_plant_1/moisture/config", moisture_config.c_str(), true);
   client.publish("homeassistant/number/water_plant_1/read_interval/config", read_interval_config.c_str(), true);
   client.publish("homeassistant/switch/water_plant_1/relay/config", relay_config.c_str(), true);
+  client.publish("homeassistant/switch/water_plant_1_auto_mode/config", auto_mode_config.c_str(), true);
 }
 
 // Reconnect to MQTT broker if disconnected
@@ -233,9 +262,19 @@ void reconnect_mqtt() {
         )) {
       client.publish(availability_topic, "online", true);
       Serial.println("connected.");
+
+      // Publish Home Assistant discovery topics
       publish_discovery();
+
+      // Subscribe to command topics
       client.subscribe(relay_command_topic);
+      client.subscribe(auto_mode_command_topic);
       client.subscribe(read_interval_topic);
+
+      // Publish initial states
+      client.publish(relay_state_topic, digitalRead(RELAY_PIN) ? "ON" : "OFF", true);
+      client.publish(auto_mode_state_topic, autoModeEnabled ? "ON" : "OFF", true);
+
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
@@ -357,14 +396,12 @@ void loop() {
     Serial.printf("Humidity: %.2f%%, Moisture: %.2f%%, Temperature: %.2f °F\n", humidity, moisture, temperature);
 
     // Control relay automatically unless overridden
-    if (!relayIsForced) {
-      if (moisture < MOISTURE_THRESHOLD && false) {
+    if (!relayIsForced && autoModeEnabled) {
+      if (moisture < MOISTURE_THRESHOLD) {
         update_relay_state(true);
-        digitalWrite(ONBOARD_LED_PIN, HIGH);
         Serial.println("Relay ON (auto)");
       } else {
         update_relay_state(false);
-        digitalWrite(ONBOARD_LED_PIN, LOW);
         Serial.println("Relay OFF (auto)");
       }
     }
@@ -382,14 +419,12 @@ void loop() {
 
     display.clearDisplay();
     display.setCursor(0, 16);
+    display.setTextSize(2);
 
     if (showHumidity) {
-      display.setTextSize(2);
-      float temperatureF = temperature * 9.0 / 5.0 + 32.0; // Convert to Fahrenheit for display
-      display.printf("Temp:\n%.1f F", temperatureF);
+      display.printf("T: %04.1f F\nH: %.1f%%", temperature, humidity);
     } else {
-      display.setTextSize(2);
-      display.printf("Moist:\n%.2f%%", moisture);
+      display.printf("M: %04.1f%%\nH: %.1f%%", moisture, humidity);
     }
 
     display.display();
