@@ -97,6 +97,49 @@ void update_relay_state(bool is_on) {
   client.publish(relay_state_topic, state, true);
 }
 
+void readSensorData() {
+  // Read sensor data
+
+  // Read Humidity Percentage
+  float humidityRaw = sensor.readHumidity();
+  if (!isnan(humidityRaw)) {
+    humidity = humidityRaw;
+  }
+
+  // Read Temperature in Fahrenheit
+  float temperatureRaw = sensor.readTemperature();
+  if (!isnan(temperatureRaw)) {
+    temperature = (temperatureRaw * 9.0 / 5.0 + 32.0) + TEMPERATURE_CALIBRATION; // Convert to Fahrenheit and apply calibration
+  }
+
+  // Read Moisture Percentage
+  int rawValue = analogRead(MOISTURE_PIN);
+  if (!isnan(rawValue)) {
+    // Calculate inverted percentage
+    float percentage = (MOISTURE_DRY - rawValue) * 100.0 / (MOISTURE_DRY - MOISTURE_WET);
+    // Clamp the result between 0 and 100
+    moisture = constrain(percentage, 0.0, 100.0);
+  }
+
+  Serial.printf("Humidity: %.2f%%, Moisture: %.2f%%, Temperature: %.2f °F\n", humidity, moisture, temperature);
+
+  // Control relay automatically unless overridden
+  if (!relayIsForced && autoModeEnabled) {
+    if (moisture < MOISTURE_THRESHOLD) {
+      update_relay_state(true);
+      Serial.println("Relay ON (auto)");
+    } else {
+      update_relay_state(false);
+      Serial.println("Relay OFF (auto)");
+    }
+  }
+
+  // Publish sensor readings (publish temperature in Fahrenheit)
+  client.publish(state_topic_temp, String(temperature).c_str(), true);
+  client.publish(state_topic_humidity, String(humidity).c_str(), true);
+  client.publish(state_topic_moisture, String(moisture).c_str(), true);
+}
+
 // Handle incoming MQTT messages
 void callback(char* topic, byte* payload, unsigned int length) {
   payload[length] = '\0';
@@ -125,6 +168,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
   } else if (String(topic) == auto_mode_command_topic) {
     if (command == "ON") {
       autoModeEnabled = true;
+      readSensorData();
       Serial.println("Auto watering ENABLED via MQTT");
     } else if (command == "OFF") {
       autoModeEnabled = false;
@@ -372,44 +416,7 @@ void loop() {
   if (now - lastReadTime >= readIntervalMs || lastReadTime == 0) {
     lastReadTime = now;
 
-    // Read Humidity Percentage
-    float humidityRaw = sensor.readHumidity();
-    if (!isnan(humidityRaw)) {
-      humidity = humidityRaw;
-    }
-
-    // Read Temperature in Fahrenheit
-    float temperatureRaw = sensor.readTemperature();
-    if (!isnan(temperatureRaw)) {
-      temperature = (temperatureRaw * 9.0 / 5.0 + 32.0) + TEMPERATURE_CALIBRATION; // Convert to Fahrenheit and apply calibration
-    }
-
-    // Read Moisture Percentage
-    int rawValue = analogRead(MOISTURE_PIN);
-    if (!isnan(rawValue)) {
-      // Calculate inverted percentage
-      float percentage = (MOISTURE_DRY - rawValue) * 100.0 / (MOISTURE_DRY - MOISTURE_WET);
-      // Clamp the result between 0 and 100
-      moisture = constrain(percentage, 0.0, 100.0);
-    }
-
-    Serial.printf("Humidity: %.2f%%, Moisture: %.2f%%, Temperature: %.2f °F\n", humidity, moisture, temperature);
-
-    // Control relay automatically unless overridden
-    if (!relayIsForced && autoModeEnabled) {
-      if (moisture < MOISTURE_THRESHOLD) {
-        update_relay_state(true);
-        Serial.println("Relay ON (auto)");
-      } else {
-        update_relay_state(false);
-        Serial.println("Relay OFF (auto)");
-      }
-    }
-
-    // Publish sensor readings (publish temperature in Fahrenheit)
-    client.publish(state_topic_temp, String(temperature).c_str(), true);
-    client.publish(state_topic_humidity, String(humidity).c_str(), true);
-    client.publish(state_topic_moisture, String(moisture).c_str(), true);
+    readSensorData();
   }
 
   // Toggle display content periodically
