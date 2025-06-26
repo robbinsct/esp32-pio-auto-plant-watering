@@ -120,16 +120,16 @@ void readSensorData()
   }
 
   // Read Moisture Percentage
-  int rawValue = analogRead(MOISTURE_PIN);
-  if (!isnan(rawValue))
+  int moistureRaw = analogRead(MOISTURE_PIN);
+  if (!isnan(moistureRaw))
   {
     // Calculate inverted percentage
-    float percentage = (MOISTURE_DRY - rawValue) * 100.0 / (MOISTURE_DRY - MOISTURE_WET);
+    float percentage = (MOISTURE_DRY - moistureRaw) * 100.0 / (MOISTURE_DRY - MOISTURE_WET);
     // Clamp the result between 0 and 100
     moisture = constrain(percentage, 0.0, 100.0);
   }
 
-  Serial.printf("Humidity: %.2f%%, Moisture: %.2f%%, Temperature: %.2f °F\n", humidity, moisture, temperature);
+  Serial.printf("Humidity: %.2f%%, Moisture: %.2f%% (%d), Temperature: %.2f °F\n", humidity, moisture, moistureRaw, temperature);
 
   // Control relay automatically unless overridden
   if (!relayIsForced && autoModeEnabled)
