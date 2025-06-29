@@ -76,19 +76,24 @@ const char *mqtt_pass = "mqttuser";
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-// Button interrupt variables
-volatile bool buttonPressed = false;
-volatile unsigned long lastButtonInterrupt = 0;
-const unsigned long debounceDelay = 200; // ms
+// Remove the debounce state machine and variables
+// enum ButtonState { IDLE, DEBOUNCING, PRESSED, RELEASED };
+// volatile ButtonState buttonState = IDLE;
+// volatile unsigned long buttonLastChange = 0;
+// const unsigned long debounceDelay = 200; // ms
+// volatile bool buttonEvent = false;
 
-// Interrupt service routine for button press
+// Instead, use a simple debounce for press/release
+volatile bool buttonChanged = false;
+volatile unsigned long buttonLastChange = 0;
+const unsigned long debounceDelay = 50; // ms
+
 void IRAM_ATTR handleButtonInterrupt()
 {
   unsigned long now = millis();
-  if (now - lastButtonInterrupt > debounceDelay)
-  {
-    buttonPressed = true;
-    lastButtonInterrupt = now;
+  if (now - buttonLastChange > debounceDelay) {
+    buttonChanged = true;
+    buttonLastChange = now;
   }
 }
 
@@ -391,7 +396,7 @@ void setup()
   // Setup MQTT client
   client.setServer(mqtt_server, 1883);
   client.setCallback(callback);
-  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), handleButtonInterrupt, RISING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), handleButtonInterrupt, CHANGE);
 
   // Initialize sensor
   sensor.setHeatLevel(0); // Set heater level to 0
@@ -423,21 +428,22 @@ void loop()
 
   unsigned long now = millis();
 
-  // Handle button press
-  if (buttonPressed)
-  {
-    buttonPressed = false;
-    relayForcedState = !relayForcedState;
-    relayIsForced = true;
-    update_relay_state(relayForcedState);
-    Serial.printf("Button interrupt: Relay forced state: %s\n", relayForcedState ? "ON" : "OFF");
-  }
-  else
-  {
-    // Check if the button was pressed but not handled
-    if (millis() - lastButtonInterrupt > debounceDelay)
-    {
-      relayIsForced = false; // Reset forced state after debounce
+  // Button hold logic: relay ON while button held, OFF when released
+  static bool lastButtonState = LOW;
+  bool buttonState = digitalRead(BUTTON_PIN);
+
+  if (buttonChanged) {
+    buttonChanged = false;
+    if (buttonState == HIGH) {
+      relayForcedState = true;
+      relayIsForced = true;
+      update_relay_state(true);
+      Serial.println("Button held: Relay ON");
+    } else {
+      relayForcedState = false;
+      relayIsForced = true;
+      update_relay_state(false);
+      Serial.println("Button released: Relay OFF");
     }
   }
 
