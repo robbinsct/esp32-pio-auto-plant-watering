@@ -76,7 +76,14 @@ WiFiClient espClient;
 PubSubClient client(espClient);
 
 // Display state enumeration
-enum DisplayState { AUTO, PUMP, TEMPERATURE, HUMIDITY, MOISTURE };
+enum DisplayState
+{
+  AUTO,
+  PUMP,
+  TEMPERATURE,
+  HUMIDITY,
+  MOISTURE
+};
 DisplayState displayState = AUTO;
 
 // Button interrupt variables
@@ -88,7 +95,8 @@ const unsigned long debounceDelay = 50; // ms
 void IRAM_ATTR handleButtonInterrupt()
 {
   unsigned long now = millis();
-  if (now - buttonLastChange > debounceDelay) {
+  if (now - buttonLastChange > debounceDelay)
+  {
     buttonChanged = true;
     buttonLastChange = now;
   }
@@ -429,14 +437,18 @@ void loop()
   static bool lastButtonState = LOW;
   bool buttonState = digitalRead(BUTTON_PIN);
 
-  if (buttonChanged) {
+  if (buttonChanged)
+  {
     buttonChanged = false;
-    if (buttonState == HIGH) {
+    if (buttonState == HIGH)
+    {
       relayForcedState = true;
       relayIsForced = true;
       update_relay_state(true);
       Serial.println("Button held: Relay ON");
-    } else {
+    }
+    else
+    {
       relayForcedState = false;
       relayIsForced = true;
       update_relay_state(false);
@@ -446,7 +458,9 @@ void loop()
 
   // Maintain MQTT connection
   if (!client.connected())
+  {
     reconnect_mqtt();
+  }
   client.loop();
 
   // Read and publish sensor data periodically
