@@ -80,8 +80,8 @@ enum DisplayState { AUTO, PUMP, TEMPERATURE, HUMIDITY, MOISTURE };
 DisplayState displayState = AUTO;
 
 // Button interrupt variables
-volatile bool buttonPressed = false;
-volatile unsigned long lastButtonInterrupt = 0;
+volatile bool buttonChanged = false;
+volatile unsigned long buttonLastChange = 0;
 const unsigned long debounceDelay = 50; // ms
 
 // Interrupt service routine for button press
