@@ -26,7 +26,7 @@ Adafruit_Si7021 sensor = Adafruit_Si7021();
 
 // Sensor reading and display timing
 #define MOISTURE_THRESHOLD 50.0 // Percentage threshold for moisture
-#define DISPLAY_TOGGLE_MS 5000  // 5 seconds
+#define DISPLAY_TOGGLE_MS 2500  // 2.5 seconds
 
 // Moisture sensor calibration values
 #define MOISTURE_DRY 2800
@@ -41,7 +41,6 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 // Timing and state variables
 unsigned long lastReadTime = 0;
 unsigned long lastDisplayToggleTime = 0;
-bool showHumidity = true;
 bool autoModeEnabled = false;
 bool relayForcedState = false;
 bool relayIsForced = false;
@@ -50,7 +49,11 @@ bool relayIsForced = false;
 float temperature = 0.0;
 float humidity = 0.0;
 float moisture = 0.0;
-unsigned long readIntervalMs = 60000; // Default to 60 seconds
+unsigned long readIntervalMs = 300000; // Default to 5 minutes
+
+// WiFi  credentials
+const char *ssid = "Artemis";
+const char *password = "8012018955";
 
 // MQTT topics and network credentials
 const char *device_name = "water_plant_1";
@@ -64,10 +67,6 @@ const char *read_interval_topic = "home/water_plant_1/interval/set";
 const char *auto_mode_command_topic = "home/water_plant_1/auto_mode/set";
 const char *auto_mode_state_topic = "home/water_plant_1/auto_mode/state";
 const char *availability_topic = "home/water_plant_1/status";
-
-const char *ssid = "Artemis";
-const char *password = "8012018955";
-
 const char *mqtt_server = "192.168.11.54";
 const char *mqtt_user = "mqttuser";
 const char *mqtt_pass = "mqttuser";
@@ -76,10 +75,14 @@ const char *mqtt_pass = "mqttuser";
 WiFiClient espClient;
 PubSubClient client(espClient);
 
+// Display state enumeration
+enum DisplayState { AUTO, PUMP, TEMPERATURE, HUMIDITY, MOISTURE };
+DisplayState displayState = AUTO;
+
 // Button interrupt variables
 volatile bool buttonPressed = false;
 volatile unsigned long lastButtonInterrupt = 0;
-const unsigned long debounceDelay = 200; // ms
+const unsigned long debounceDelay = 50; // ms
 
 // Interrupt service routine for button press
 void IRAM_ATTR handleButtonInterrupt()
@@ -458,19 +461,35 @@ void loop()
   if (now - lastDisplayToggleTime >= DISPLAY_TOGGLE_MS || lastDisplayToggleTime == 0)
   {
     lastDisplayToggleTime = now;
-    showHumidity = !showHumidity;
 
     display.clearDisplay();
     display.setCursor(0, 16);
     display.setTextSize(2);
 
-    if (showHumidity)
+    if (displayState == AUTO)
     {
-      display.printf("T: %04.1f F\nH: %.1f%%", temperature, humidity);
+      display.printf("Auto:\n%s", autoModeEnabled ? "ON" : "OFF");
+      displayState = PUMP;
     }
-    else
+    else if (displayState == PUMP)
     {
-      display.printf("M: %04.1f%%\nH: %.1f%%", moisture, humidity);
+      display.printf("Pump:\n%s", relayForcedState ? "ON" : "OFF");
+      displayState = TEMPERATURE;
+    }
+    else if (displayState == TEMPERATURE)
+    {
+      display.printf("Temperature:\n%04.1f F", temperature);
+      displayState = HUMIDITY;
+    }
+    else if (displayState == HUMIDITY)
+    {
+      display.printf("Humidity:\n%.1f%%", humidity);
+      displayState = MOISTURE;
+    }
+    else if (displayState == MOISTURE)
+    {
+      display.printf("Moisture:\n%.1f%%", moisture);
+      displayState = AUTO;
     }
 
     display.display();
