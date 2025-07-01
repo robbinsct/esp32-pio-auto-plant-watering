@@ -394,7 +394,7 @@ void setup()
   // Setup MQTT client
   client.setServer(mqtt_server, 1883);
   client.setCallback(callback);
-  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), handleButtonInterrupt, RISING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), handleButtonInterrupt, CHANGE);
 
   // Initialize sensor
   sensor.setHeatLevel(0); // Set heater level to 0
