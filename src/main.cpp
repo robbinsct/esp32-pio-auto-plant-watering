@@ -47,8 +47,8 @@ bool relayIsForced = false;
 
 // Sensor value holders
 float temperature = 0.0;
-float humidity = 0.0;
-float moisture = 0.0;
+float humidityPct = 0.0;
+float moisturePct = 0.0;
 unsigned long readIntervalMs = 300000; // Default to 5 minutes
 
 // WiFi  credentials
@@ -112,7 +112,7 @@ void readSensorData()
   float humidityRaw = sensor.readHumidity();
   if (!isnan(humidityRaw))
   {
-    humidity = humidityRaw;
+    humidityPct = humidityRaw;
   }
 
   // Read Temperature in Fahrenheit
@@ -129,15 +129,15 @@ void readSensorData()
     // Calculate inverted percentage
     float percentage = (MOISTURE_DRY - moistureRaw) * 100.0 / (MOISTURE_DRY - MOISTURE_WET);
     // Clamp the result between 0 and 100
-    moisture = constrain(percentage, 0.0, 100.0);
+    moisturePct = constrain(percentage, 0.0, 100.0);
   }
 
-  Serial.printf("Humidity: %.2f%%, Moisture: %.2f%% (%d), Temperature: %.2f °F\n", humidity, moisture, moistureRaw, temperature);
+  Serial.printf("Humidity: %.2f%%, Moisture: %.2f%% (%d), Temperature: %.2f °F\n", humidityPct, moisturePct, moistureRaw, temperature);
 
   // Control relay automatically unless overridden
   if (!relayIsForced && autoModeEnabled)
   {
-    if (moisture < MOISTURE_THRESHOLD)
+    if (moisturePct < MOISTURE_THRESHOLD)
     {
       update_relay_state(true);
       Serial.println("Relay ON (auto)");
@@ -151,8 +151,8 @@ void readSensorData()
 
   // Publish sensor readings (publish temperature in Fahrenheit)
   client.publish(state_topic_temp, String(temperature).c_str(), true);
-  client.publish(state_topic_humidity, String(humidity).c_str(), true);
-  client.publish(state_topic_moisture, String(moisture).c_str(), true);
+  client.publish(state_topic_humidity, String(humidityPct).c_str(), true);
+  client.publish(state_topic_moisture, String(moisturePct).c_str(), true);
 }
 
 // Handle incoming MQTT messages
@@ -483,12 +483,12 @@ void loop()
     }
     else if (displayState == HUMIDITY)
     {
-      display.printf("Humidity:\n%.1f%%", humidity);
+      display.printf("Humidity:\n%.1f%%", humidityPct);
       displayState = MOISTURE;
     }
     else if (displayState == MOISTURE)
     {
-      display.printf("Moisture:\n%.1f%%", moisture);
+      display.printf("Moisture:\n%.1f%%", moisturePct);
       displayState = AUTO;
     }
 
