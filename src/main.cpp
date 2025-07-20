@@ -67,6 +67,7 @@ const char *read_interval_topic = "home/water_plant_1/interval/set";
 const char *auto_mode_command_topic = "home/water_plant_1/auto_mode/set";
 const char *auto_mode_state_topic = "home/water_plant_1/auto_mode/state";
 const char *availability_topic = "home/water_plant_1/status";
+const char *notify_topic = "home/water_plant_1/notify";
 const char *mqtt_server = "192.168.11.54";
 const char *mqtt_user = "mqttuser";
 const char *mqtt_pass = "mqttuser";
@@ -91,6 +92,23 @@ volatile bool buttonChanged = false;
 volatile unsigned long buttonLastChange = 0;
 const unsigned long debounceDelay = 50; // ms
 
+// Notification variables
+unsigned long lastWateringTime = 0;
+unsigned long lastLowMoistureAlert = 0;
+bool lowMoistureAlertSent = false;
+bool wateringInProgress = false;
+const unsigned long NOTIFICATION_COOLDOWN = 300000; // 5 minutes between similar notifications
+const unsigned long LOW_MOISTURE_ALERT_INTERVAL = 1800000; // 30 minutes between low moisture alerts
+
+// Notification types
+enum NotificationType {
+  WATERING_STARTED,
+  WATERING_COMPLETED,
+  LOW_MOISTURE_ALERT,
+  SENSOR_ERROR,
+  SYSTEM_STATUS
+};
+
 // Interrupt service routine for button press
 void IRAM_ATTR handleButtonInterrupt()
 {
@@ -111,9 +129,49 @@ void update_relay_state(bool is_on)
   client.publish(relay_state_topic, state, true);
 }
 
+// Send MQTT notification
+void sendNotification(NotificationType type, String message = "") {
+  if (!client.connected()) return;
+  
+  String notification;
+  String timestamp = String(millis() / 1000); // Simple timestamp in seconds
+  
+  switch (type) {
+    case WATERING_STARTED:
+      notification = "{\"type\":\"watering_started\",\"message\":\"Plant watering started - Moisture: " + String(moisturePct, 1) + "%\",\"timestamp\":" + timestamp + ",\"moisture\":" + String(moisturePct, 2) + "}";
+      wateringInProgress = true;
+      lastWateringTime = millis();
+      break;
+      
+    case WATERING_COMPLETED:
+      notification = "{\"type\":\"watering_completed\",\"message\":\"Plant watering completed\",\"timestamp\":" + timestamp + ",\"duration\":" + String((millis() - lastWateringTime) / 1000) + "}";
+      wateringInProgress = false;
+      break;
+      
+    case LOW_MOISTURE_ALERT:
+      if (millis() - lastLowMoistureAlert < LOW_MOISTURE_ALERT_INTERVAL && lowMoistureAlertSent) return;
+      notification = "{\"type\":\"low_moisture\",\"message\":\"Low soil moisture detected: " + String(moisturePct, 1) + "%\",\"timestamp\":" + timestamp + ",\"moisture\":" + String(moisturePct, 2) + "}";
+      lastLowMoistureAlert = millis();
+      lowMoistureAlertSent = true;
+      break;
+      
+    case SENSOR_ERROR:
+      notification = "{\"type\":\"sensor_error\",\"message\":\"" + message + "\",\"timestamp\":" + timestamp + "}";
+      break;
+      
+    case SYSTEM_STATUS:
+      notification = "{\"type\":\"system_status\",\"message\":\"" + message + "\",\"timestamp\":" + timestamp + ",\"temperature\":" + String(temperature, 1) + ",\"humidity\":" + String(humidityPct, 1) + ",\"moisture\":" + String(moisturePct, 1) + "}";
+      break;
+  }
+  
+  Serial.println("Sending notification: " + notification);
+  client.publish(notify_topic, notification.c_str(), false);
+}
+
 void readSensorData()
 {
   // Read sensor data
+  bool sensorError = false;
 
   // Read Humidity Percentage
   float humidityRaw = sensor.readHumidity();
@@ -121,12 +179,22 @@ void readSensorData()
   {
     humidityPct = humidityRaw;
   }
+  else
+  {
+    sensorError = true;
+    sendNotification(SENSOR_ERROR, "Failed to read humidity sensor");
+  }
 
   // Read Temperature in Fahrenheit
   float temperatureRaw = sensor.readTemperature();
   if (!isnan(temperatureRaw))
   {
     temperature = (temperatureRaw * 9.0 / 5.0 + 32.0) + TEMPERATURE_CALIBRATION; // Convert to Fahrenheit and apply calibration
+  }
+  else
+  {
+    sensorError = true;
+    sendNotification(SENSOR_ERROR, "Failed to read temperature sensor");
   }
 
   // Read Moisture Percentage
@@ -138,20 +206,39 @@ void readSensorData()
     // Clamp the result between 0 and 100
     moisturePct = constrain(percentage, 0.0, 100.0);
   }
+  else
+  {
+    sensorError = true;
+    sendNotification(SENSOR_ERROR, "Failed to read moisture sensor");
+  }
 
   Serial.printf("Humidity: %.2f%%, Moisture: %.2f%% (%d), Temperature: %.2f °F\n", humidityPct, moisturePct, moistureRaw, temperature);
+
+  // Check for low moisture alert (only if not currently watering)
+  if (moisturePct < MOISTURE_THRESHOLD && !wateringInProgress && autoModeEnabled) {
+    sendNotification(LOW_MOISTURE_ALERT);
+  }
+
+  // Reset low moisture alert flag if moisture is adequate
+  if (moisturePct >= MOISTURE_THRESHOLD + 5.0) { // Add hysteresis
+    lowMoistureAlertSent = false;
+  }
 
   // Control relay automatically unless overridden
   if (!relayIsForced && autoModeEnabled)
   {
-    if (moisturePct < MOISTURE_THRESHOLD)
+    bool currentRelayState = digitalRead(RELAY_PIN);
+    
+    if (moisturePct < MOISTURE_THRESHOLD && !currentRelayState)
     {
       update_relay_state(true);
+      sendNotification(WATERING_STARTED);
       Serial.println("Relay ON (auto)");
     }
-    else
+    else if (moisturePct >= MOISTURE_THRESHOLD && currentRelayState)
     {
       update_relay_state(false);
+      sendNotification(WATERING_COMPLETED);
       Serial.println("Relay OFF (auto)");
     }
   }
@@ -175,6 +262,7 @@ void callback(char *topic, byte *payload, unsigned int length)
       relayForcedState = true;
       relayIsForced = true;
       update_relay_state(true);
+      sendNotification(WATERING_STARTED);
       Serial.println("Relay turned ON via MQTT.");
     }
     else if (command == "OFF")
@@ -182,6 +270,9 @@ void callback(char *topic, byte *payload, unsigned int length)
       relayForcedState = false;
       relayIsForced = true;
       update_relay_state(false);
+      if (wateringInProgress) {
+        sendNotification(WATERING_COMPLETED);
+      }
       Serial.println("Relay turned OFF via MQTT.");
     }
   }
@@ -191,6 +282,7 @@ void callback(char *topic, byte *payload, unsigned int length)
     if (interval >= 10000 && interval <= 3600000)
     { // 10 sec to 1 hour
       readIntervalMs = interval;
+      sendNotification(SYSTEM_STATUS, "Read interval updated to " + String(interval / 1000) + " seconds");
       Serial.printf("Updated read interval to %lu ms\n", readIntervalMs);
     }
     else
@@ -204,11 +296,16 @@ void callback(char *topic, byte *payload, unsigned int length)
     {
       autoModeEnabled = true;
       readSensorData();
+      sendNotification(SYSTEM_STATUS, "Auto watering mode enabled");
       Serial.println("Auto watering ENABLED via MQTT");
     }
     else if (command == "OFF")
     {
       autoModeEnabled = false;
+      if (wateringInProgress) {
+        sendNotification(WATERING_COMPLETED);
+      }
+      sendNotification(SYSTEM_STATUS, "Auto watering mode disabled");
       client.publish(relay_command_topic, "OFF", true);
       Serial.println("Auto watering DISABLED via MQTT");
     }
@@ -238,7 +335,7 @@ void publish_discovery()
                        "\"], \"name\": \"Water Plant 1\"," +
                        "\"manufacturer\": \"Tom's Plant Co.\"," +
                        "\"model\": \"ESP32 Plant Monitor\"," +
-                       "\"sw_version\": \"1.0\"}";
+                       "\"sw_version\": \"1.1\"}";
 
   // Temperature config (change unit to °F)
   String temp_config = String("{") +
@@ -318,11 +415,25 @@ void publish_discovery()
                             "\"device\": {\"identifiers\": [\"" + device_name + "\"], \"name\": \"Water Plant 1\"}" +
                             "}";
 
+  // Notify sensor config for Home Assistant
+  String notify_config = String("{") +
+                              "\"name\": \"Plant Notify\"," +
+                              "\"state_topic\": \"" + notify_topic + "\"," +
+                              "\"value_template\": \"{{ value_json.message }}\"," +
+                              "\"json_attributes_topic\": \"" + notify_topic + "\"," +
+                              "\"object_id\": \"notify\"," +
+                              "\"unique_id\": \"" + String(device_name) + "_notify\"," +
+                              "\"availability_topic\": \"" + availability_topic + "\"," +
+                              "\"icon\": \"mdi:bell-alert\"," +
+                              device_json +
+                              "}";
+
   // Publish discovery messages
   client.setBufferSize(1024); // Increase buffer size for larger messages
   client.publish("homeassistant/sensor/water_plant_1/temperature/config", temp_config.c_str(), true);
   client.publish("homeassistant/sensor/water_plant_1/humidity/config", humidity_config.c_str(), true);
   client.publish("homeassistant/sensor/water_plant_1/moisture/config", moisture_config.c_str(), true);
+  client.publish("homeassistant/sensor/water_plant_1/notify/config", notify_config.c_str(), true);
   client.publish("homeassistant/number/water_plant_1/read_interval/config", read_interval_config.c_str(), true);
   client.publish("homeassistant/switch/water_plant_1/relay/config", relay_config.c_str(), true);
   client.publish("homeassistant/switch/water_plant_1_auto_mode/config", auto_mode_config.c_str(), true);
@@ -357,6 +468,9 @@ void reconnect_mqtt()
       // Publish initial states
       client.publish(relay_state_topic, digitalRead(RELAY_PIN) ? "ON" : "OFF", true);
       client.publish(auto_mode_state_topic, autoModeEnabled ? "ON" : "OFF", true);
+      
+      // Send startup notification
+      sendNotification(SYSTEM_STATUS, "Plant monitoring system started");
     }
     else
     {
@@ -445,6 +559,7 @@ void loop()
       relayForcedState = true;
       relayIsForced = true;
       update_relay_state(true);
+      sendNotification(WATERING_STARTED);
       Serial.println("Button held: Relay ON");
     }
     else
@@ -452,6 +567,9 @@ void loop()
       relayForcedState = false;
       relayIsForced = true;
       update_relay_state(false);
+      if (wateringInProgress) {
+        sendNotification(WATERING_COMPLETED);
+      }
       Serial.println("Button released: Relay OFF");
     }
   }
@@ -492,7 +610,7 @@ void loop()
     }
     else if (displayState == TEMPERATURE)
     {
-      display.printf("Temperature:\n%04.1f F", temperature);
+      display.printf("Temp:\n%04.1f F", temperature);
       displayState = HUMIDITY;
     }
     else if (displayState == HUMIDITY)
